@@ -65,7 +65,14 @@ IMPORTANT RULES:
    - Generate complete file contents.
    - Use the fileTree structure shown above.
    - Every file must use the file.contents structure.
-   - Directories must use the directory structure expected by WebContainer.
+   - Directories must use WebContainer's "directory" wrapper. For example:
+     "routes": {
+       "directory": {
+         "apiRoutes.js": {
+           "file": { "contents": "Complete file contents" }
+         }
+       }
+     }
    - Include appropriate buildCommand and startCommand.
    - Make sure generated files work together.
 

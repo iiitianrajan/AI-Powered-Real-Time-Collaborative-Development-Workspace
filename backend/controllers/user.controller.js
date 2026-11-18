@@ -67,10 +67,17 @@ export const loginController = async (req, res) => {
 }
 
 export const profileController = async (req, res) => {
+    try {
+        const user = await userModel.findOne({ email: req.user.email });
 
-    res.status(200).json({
-        user: req.user
-    });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.status(200).json({ user });
+    } catch (err) {
+        res.status(500).json({ error: 'Unable to load user profile' });
+    }
 
 }
 
