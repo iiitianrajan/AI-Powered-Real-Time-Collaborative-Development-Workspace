@@ -16,4 +16,8 @@ const io = new Server(server, {
     }
 });
 
+server.listen(port,() =>{
+    console.log(`Server is running on port ${port}`)
+})
+
 
