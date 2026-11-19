@@ -11,6 +11,7 @@ import {
 import Markdown from "markdown-to-jsx";
 import hljs from "highlight.js";
 import { getWebContainer } from "../config/webContainer.js";
+import toast from "react-hot-toast";
 
 function SyntaxHighlightedCode(props) {
   const ref = useRef(null);
@@ -81,6 +82,19 @@ function inferStartCommand(fileTree) {
   return null;
 }
 
+function mergeMessages(currentMessages, incomingMessages) {
+  const messagesById = new Map();
+
+  [...currentMessages, ...incomingMessages].forEach((chatMessage) => {
+    const key = chatMessage._id || `${chatMessage.sender?._id}-${chatMessage.createdAt}-${chatMessage.message}`;
+    messagesById.set(key, chatMessage);
+  });
+
+  return Array.from(messagesById.values()).sort(
+    (first, second) => new Date(first.createdAt || 0) - new Date(second.createdAt || 0),
+  );
+}
+
 const Project = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -145,10 +159,18 @@ const Project = () => {
 
     sendMessage("project-message", {
       message: trimmedMessage,
-      sender: user,
     });
-    setMessages((prevMessages) => [...prevMessages, { sender: user, message: trimmedMessage }]); // Update messages state
     setMessage("");
+  };
+
+  const clearChat = () => {
+    const shouldClear = window.confirm(
+      "Clear this chat for every collaborator? This cannot be undone.",
+    );
+
+    if (shouldClear) {
+      sendMessage("clear-project-chat");
+    }
   };
 
   function WriteAiMessage(message) {
@@ -196,10 +218,24 @@ const Project = () => {
           setStartCommand(message.startCommand);
         }
 
-        setMessages((prevMessages) => [...prevMessages, data]); // Update messages state
+        setMessages((prevMessages) => mergeMessages(prevMessages, [data]));
       } else {
-        setMessages((prevMessages) => [...prevMessages, data]); // Update messages state
+        setMessages((prevMessages) => mergeMessages(prevMessages, [data]));
       }
+    });
+
+    receiveMessage("project-chat-cleared", () => {
+      setMessages([]);
+    });
+
+    receiveMessage("project-message-error", (data) => {
+      console.error(data.error);
+    });
+
+    receiveMessage("project-deleted", (data) => {
+      toast.error(data.message || "This workspace is no longer available.");
+      disconnectSocket();
+      navigate("/", { replace: true });
     });
 
     axios
@@ -215,6 +251,15 @@ const Project = () => {
       .get("/users/all")
       .then((res) => {
         setUsers(res.data.users);
+      })
+      .catch((err) => {
+        console.log(err);
+      });
+
+    axios
+      .get(`/projects/${location.state.project._id}/messages`)
+      .then((res) => {
+        setMessages((prevMessages) => mergeMessages(prevMessages, res.data.messages));
       })
       .catch((err) => {
         console.log(err);
@@ -272,16 +317,8 @@ const Project = () => {
       <div className="flex min-h-0 flex-1 gap-3 p-3 pt-2">
       <section className="left relative flex h-full min-w-80 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white shadow-2xl shadow-black/20 md:min-w-96">
         <header className="absolute top-0 z-10 flex w-full items-center justify-between border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
-          <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100" onClick={() => setIsModalOpen(true)}>
-            <i className="ri-user-add-line text-base text-indigo-600"></i>
-            <p>Add collaborator</p>
-          </button>
-          <button
-            onClick={() => setIsSidePanelOpen(!isSidePanelOpen)}
-            className="grid size-9 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100"
-          >
-            <i className="ri-group-fill"></i>
-          </button>
+          <div className="flex items-center gap-1"><button className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100" onClick={() => setIsModalOpen(true)}><i className="ri-user-add-line text-base text-indigo-600"></i><p>Add collaborator</p></button><button type="button" onClick={clearChat} title="Clear chat" aria-label="Clear chat" className="grid size-9 place-items-center rounded-lg text-slate-500 transition hover:bg-rose-50 hover:text-rose-600"><i className="ri-delete-bin-6-line"></i></button></div>
+          <button onClick={() => setIsSidePanelOpen(!isSidePanelOpen)} className="grid size-9 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100"><i className="ri-group-fill"></i></button>
         </header>
         <div className="conversation-area relative flex h-full flex-grow flex-col bg-slate-50 pt-16 pb-14">
           <div

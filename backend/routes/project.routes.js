@@ -30,6 +30,21 @@ router.get('/get-project/:projectId',
     projectController.getProjectById
 )
 
+router.get('/:projectId/messages',
+    authMiddleWare.authUser,
+    projectController.getProjectMessages
+)
+
+router.delete('/:projectId/messages',
+    authMiddleWare.authUser,
+    projectController.clearProjectMessages
+)
+
+router.delete('/:projectId',
+    authMiddleWare.authUser,
+    projectController.deleteProject
+)
+
 router.put('/update-file-tree',
     authMiddleWare.authUser,
     body('projectId').isString().withMessage('Project ID is required'),

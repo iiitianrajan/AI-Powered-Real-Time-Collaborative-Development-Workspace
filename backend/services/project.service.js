@@ -1,5 +1,7 @@
 import projectModel from '../models/project.model.js';
 import mongoose from 'mongoose';
+import messageModel from '../models/message.model.js';
+import aiMemoryModel from '../models/ai-memory.model.js';
 
 export const createProject = async ({
     name, userId
@@ -15,7 +17,8 @@ export const createProject = async ({
     try {
         project = await projectModel.create({
             name,
-            users: [ userId ]
+            users: [ userId ],
+            createdBy: userId,
         });
     } catch (error) {
         if (error.code === 11000) {
@@ -133,6 +136,32 @@ export const updateFileTree = async ({ projectId, fileTree }) => {
     }, {
         new: true
     })
+
+    return project;
+}
+
+export const deleteProject = async ({ projectId, userId }) => {
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+        throw new Error('Invalid projectId');
+    }
+
+    const project = await projectModel.findById(projectId);
+
+    if (!project) {
+        throw new Error('Project not found');
+    }
+
+    // Projects created before `createdBy` existed use the first collaborator
+    // as their owner, preserving access for existing workspaces.
+    const ownerId = project.createdBy || project.users[0];
+
+    if (!ownerId || ownerId.toString() !== userId.toString()) {
+        throw new Error('Only the workspace creator can delete this project');
+    }
+
+    await messageModel.deleteMany({ projectId: project._id });
+    await aiMemoryModel.deleteOne({ projectId: project._id });
+    await project.deleteOne();
 
     return project;
 }
