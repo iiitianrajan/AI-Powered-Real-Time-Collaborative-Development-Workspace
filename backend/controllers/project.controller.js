@@ -3,6 +3,7 @@ import * as projectService from '../services/project.service.js';
 import userModel from '../models/user.model.js';
 import { validationResult } from 'express-validator';
 import * as messageService from '../services/message.service.js';
+import * as fileRevisionService from '../services/file-revision.service.js';
 
 
 export const createProject = async (req, res) => {
@@ -181,6 +182,50 @@ export const deleteProject = async (req, res) => {
         io?.in(roomId).disconnectSockets(true);
 
         return res.status(200).json({ message: 'Workspace deleted successfully' });
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
+    }
+}
+
+export const getFileRevisions = async (req, res) => {
+    try {
+        const loggedInUser = await userModel.findOne({ email: req.user.email });
+        const revisions = await fileRevisionService.getFileRevisions({
+            projectId: req.params.projectId,
+            userId: loggedInUser._id,
+            filePath: req.query.path,
+            limit: req.query.limit,
+        });
+
+        return res.status(200).json({ revisions });
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
+    }
+}
+
+export const restoreFileRevision = async (req, res) => {
+    try {
+        const loggedInUser = await userModel.findOne({ email: req.user.email });
+        const updatedFile = await fileRevisionService.restoreFileRevision({
+            projectId: req.params.projectId,
+            user: { _id: loggedInUser._id, email: loggedInUser.email },
+            fileRevisionId: req.params.revisionId,
+        });
+
+        if (updatedFile.conflict) {
+            return res.status(409).json(updatedFile);
+        }
+
+        const revision = updatedFile.revision.toObject();
+        req.app.get('io')?.to(req.params.projectId).emit('file-content-updated', {
+            filePath: revision.filePath,
+            content: revision.content,
+            revision: revision.revision,
+            changedBy: revision.changedBy,
+            createdAt: revision.createdAt,
+        });
+
+        return res.status(200).json({ revision });
     } catch (err) {
         return res.status(400).json({ error: err.message });
     }

@@ -2,6 +2,7 @@ import projectModel from '../models/project.model.js';
 import mongoose from 'mongoose';
 import messageModel from '../models/message.model.js';
 import aiMemoryModel from '../models/ai-memory.model.js';
+import fileRevisionModel from '../models/file-revision.model.js';
 
 export const createProject = async ({
     name, userId
@@ -161,6 +162,7 @@ export const deleteProject = async ({ projectId, userId }) => {
 
     await messageModel.deleteMany({ projectId: project._id });
     await aiMemoryModel.deleteOne({ projectId: project._id });
+    await fileRevisionModel.deleteMany({ projectId: project._id });
     await project.deleteOne();
 
     return project;

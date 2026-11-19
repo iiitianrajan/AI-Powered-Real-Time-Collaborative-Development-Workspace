@@ -45,6 +45,16 @@ router.delete('/:projectId',
     projectController.deleteProject
 )
 
+router.get('/:projectId/file-revisions',
+    authMiddleWare.authUser,
+    projectController.getFileRevisions
+)
+
+router.put('/:projectId/file-revisions/:revisionId/restore',
+    authMiddleWare.authUser,
+    projectController.restoreFileRevision
+)
+
 router.put('/update-file-tree',
     authMiddleWare.authUser,
     body('projectId').isString().withMessage('Project ID is required'),

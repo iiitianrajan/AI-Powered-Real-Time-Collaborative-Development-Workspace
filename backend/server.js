@@ -9,6 +9,7 @@ import {generateResult} from './services/ai.service.js';
 import userModel from './models/user.model.js';
 import * as messageService from './services/message.service.js';
 import * as aiMemoryService from './services/ai-memory.service.js';
+import * as fileRevisionService from './services/file-revision.service.js';
 
 
 const port = process.env.PORT || 3000;
@@ -149,6 +150,35 @@ io.on('connection', socket => {
         } catch (error) {
             console.error('Unable to clear project chat:', error);
             socket.emit('project-message-error', { error: 'Chat history could not be cleared' });
+        }
+    });
+
+    socket.on('file-content-update', async (data) => {
+        try {
+            const result = await fileRevisionService.updateFileContent({
+                projectId: socket.project._id,
+                user: socket.user,
+                filePath: data?.filePath,
+                content: data?.content,
+                expectedRevision: data?.revision,
+            });
+
+            if (result.conflict) {
+                socket.emit('file-update-conflict', result);
+                return;
+            }
+
+            const revision = result.revision.toObject();
+            io.to(socket.roomId).emit('file-content-updated', {
+                filePath: revision.filePath,
+                content: revision.content,
+                revision: revision.revision,
+                changedBy: revision.changedBy,
+                createdAt: revision.createdAt,
+            });
+        } catch (error) {
+            console.error('Unable to update file:', error);
+            socket.emit('file-update-error', { error: 'File update could not be saved' });
         }
     });
 

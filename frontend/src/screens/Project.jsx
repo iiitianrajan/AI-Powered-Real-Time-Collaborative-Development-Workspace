@@ -9,7 +9,7 @@ import {
   disconnectSocket,
 } from "../config/socket";
 import Markdown from "markdown-to-jsx";
-import hljs from "highlight.js";
+import Editor from "@monaco-editor/react";
 import { getWebContainer } from "../config/webContainer.js";
 import toast from "react-hot-toast";
 
@@ -95,6 +95,85 @@ function mergeMessages(currentMessages, incomingMessages) {
   );
 }
 
+function updateFileContentInTree(tree, filePath, content) {
+  const parts = filePath.split("/").filter(Boolean);
+
+  const updateTree = (currentTree, remainingParts) => {
+    const [currentPart, ...nextParts] = remainingParts;
+    const currentNode = currentTree?.[currentPart];
+
+    if (!currentNode) {
+      return currentTree;
+    }
+
+    if (!nextParts.length) {
+      return {
+        ...currentTree,
+        [currentPart]: {
+          ...currentNode,
+          file: { ...currentNode.file, contents: content },
+        },
+      };
+    }
+
+    const usesDirectoryWrapper = currentNode.directory && typeof currentNode.directory === "object";
+    const updatedChild = updateTree(usesDirectoryWrapper ? currentNode.directory : currentNode, nextParts);
+
+    return {
+      ...currentTree,
+      [currentPart]: usesDirectoryWrapper
+        ? { ...currentNode, directory: updatedChild }
+        : updatedChild,
+    };
+  };
+
+  return updateTree(tree, parts);
+}
+
+function getEditorLanguage(filePath) {
+  const extension = filePath?.split(".").pop()?.toLowerCase();
+
+  const languageByExtension = {
+    js: "javascript",
+    jsx: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    json: "json",
+    html: "html",
+    css: "css",
+    scss: "scss",
+    md: "markdown",
+    yml: "yaml",
+    yaml: "yaml",
+    xml: "xml",
+    svg: "xml",
+    sh: "shell",
+  };
+
+  return languageByExtension[extension] || "plaintext";
+}
+
+function getFileContentFromTree(tree, filePath) {
+  const parts = filePath?.split("/").filter(Boolean) || [];
+  let currentTree = tree;
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const node = currentTree?.[parts[index]];
+
+    if (!node) {
+      return "";
+    }
+
+    if (index === parts.length - 1) {
+      return node.file?.contents ?? "";
+    }
+
+    currentTree = node.directory || node;
+  }
+
+  return "";
+}
+
 const Project = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -120,6 +199,14 @@ const Project = () => {
   const [runProcess, setRunProcess] = useState(null);
   const [startCommand, setStartCommand] = useState(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [fileRevisions, setFileRevisions] = useState({});
+  const [revisionHistory, setRevisionHistory] = useState([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [editorContent, setEditorContent] = useState("");
+  const currentFileRef = useRef(null);
+  const editorContentRef = useRef("");
+  const fileRevisionsRef = useRef({});
+  const editorSaveTimerRef = useRef(null);
   const currentUserId = user?._id ? String(user._id) : null;
 
   const handleUserClick = (id) => {
@@ -172,6 +259,119 @@ const Project = () => {
       sendMessage("clear-project-chat");
     }
   };
+
+  function loadFileRevisions(filePath) {
+    if (!filePath || !project?._id) {
+      return;
+    }
+
+    axios
+      .get(`/projects/${project._id}/file-revisions`, { params: { path: filePath, limit: 50 } })
+      .then((res) => {
+        const revisions = res.data.revisions;
+        setRevisionHistory(revisions);
+        fileRevisionsRef.current = {
+          ...fileRevisionsRef.current,
+          [filePath]: revisions[0]?.revision || 0,
+        };
+        setFileRevisions((currentRevisions) => ({
+          ...currentRevisions,
+          [filePath]: revisions[0]?.revision || 0,
+        }));
+      })
+      .catch((error) => {
+        console.log(error);
+        toast.error("Unable to load file history.");
+      });
+  }
+
+  function openFile(filePath) {
+    if (editorSaveTimerRef.current) {
+      clearTimeout(editorSaveTimerRef.current);
+      editorSaveTimerRef.current = null;
+      saveEditorContent();
+    }
+
+    setCurrentFile(filePath);
+    currentFileRef.current = filePath;
+    const nextContent = getFileContentFromTree(fileTree, filePath);
+    editorContentRef.current = nextContent;
+    setEditorContent(nextContent);
+    setOpenFiles((prev) => [...new Set([...prev, filePath])]);
+    loadFileRevisions(filePath);
+  }
+
+  function closeFile(filePath) {
+    if (filePath === currentFile && editorSaveTimerRef.current) {
+      clearTimeout(editorSaveTimerRef.current);
+      editorSaveTimerRef.current = null;
+      saveEditorContent();
+    }
+
+    const closingIndex = openFiles.indexOf(filePath);
+    const remainingFiles = openFiles.filter((openFilePath) => openFilePath !== filePath);
+    setOpenFiles(remainingFiles);
+
+    if (filePath !== currentFile) {
+      return;
+    }
+
+    const nextFile = remainingFiles[closingIndex] || remainingFiles[closingIndex - 1];
+
+    if (nextFile) {
+      openFile(nextFile);
+      return;
+    }
+
+    currentFileRef.current = null;
+    editorContentRef.current = "";
+    setCurrentFile(null);
+    setEditorContent("");
+    setRevisionHistory([]);
+    setIsHistoryOpen(false);
+  }
+
+  function updateEditorContent(content) {
+    const nextContent = content ?? "";
+    editorContentRef.current = nextContent;
+    setEditorContent(nextContent);
+    setFileTree((currentTree) => updateFileContentInTree(currentTree, currentFile, nextContent));
+
+    if (editorSaveTimerRef.current) {
+      clearTimeout(editorSaveTimerRef.current);
+    }
+
+    editorSaveTimerRef.current = setTimeout(() => {
+      editorSaveTimerRef.current = null;
+      saveEditorContent();
+    }, 700);
+  }
+
+  function saveEditorContent() {
+    const filePath = currentFileRef.current;
+
+    if (!filePath) {
+      return;
+    }
+
+    sendMessage("file-content-update", {
+      filePath,
+      content: editorContentRef.current,
+      revision: fileRevisionsRef.current[filePath] || 0,
+    });
+  }
+
+  function restoreRevision(revision) {
+    axios
+      .put(`/projects/${project._id}/file-revisions/${revision._id}/restore`)
+      .then(() => {
+        toast.success(`Restored version ${revision.revision}.`);
+        loadFileRevisions(revision.filePath);
+      })
+      .catch((error) => {
+        toast.error(error.response?.data?.error || "Unable to restore this version.");
+      });
+  }
 
   function WriteAiMessage(message) {
     const messageObject = JSON.parse(message);
@@ -238,6 +438,43 @@ const Project = () => {
       navigate("/", { replace: true });
     });
 
+    receiveMessage("file-content-updated", (data) => {
+      setFileTree((currentTree) => updateFileContentInTree(currentTree, data.filePath, data.content));
+      if (data.filePath === currentFileRef.current) {
+        editorContentRef.current = data.content;
+        setEditorContent(data.content);
+      }
+      fileRevisionsRef.current = {
+        ...fileRevisionsRef.current,
+        [data.filePath]: data.revision,
+      };
+      setFileRevisions((currentRevisions) => ({
+        ...currentRevisions,
+        [data.filePath]: data.revision,
+      }));
+    });
+
+    receiveMessage("file-update-conflict", (data) => {
+      setFileTree((currentTree) => updateFileContentInTree(currentTree, data.filePath, data.content));
+      if (data.filePath === currentFileRef.current) {
+        editorContentRef.current = data.content;
+        setEditorContent(data.content);
+      }
+      fileRevisionsRef.current = {
+        ...fileRevisionsRef.current,
+        [data.filePath]: data.revision,
+      };
+      setFileRevisions((currentRevisions) => ({
+        ...currentRevisions,
+        [data.filePath]: data.revision,
+      }));
+      toast.error("This file changed while you were editing. The latest version was loaded.");
+    });
+
+    receiveMessage("file-update-error", (data) => {
+      toast.error(data.error || "File update could not be saved.");
+    });
+
     axios
       .get(`/projects/get-project/${location.state.project._id}`)
       .then((res) => {
@@ -266,29 +503,10 @@ const Project = () => {
       });
 
     return () => {
+      clearTimeout(editorSaveTimerRef.current);
       disconnectSocket();
     };
   }, []);
-
-  function saveFileTree(ft) {
-    axios
-      .put("/projects/update-file-tree", {
-        projectId: project._id,
-        fileTree: ft,
-      })
-      .then((res) => {
-        console.log(res.data);
-      })
-      .catch((err) => {
-        console.log(err);
-      });
-  }
-
-  // Removed appendIncomingMessage and appendOutgoingMessage functions
-
-  function scrollToBottom() {
-    messageBox.current.scrollTop = messageBox.current.scrollHeight;
-  }
 
   return (
     <main className="flex h-screen w-screen flex-col overflow-hidden bg-slate-950">
@@ -399,10 +617,7 @@ const Project = () => {
     .map((file) => (
       <button
         key={file}
-        onClick={() => {
-          setCurrentFile(file);
-          setOpenFiles((prev) => [...new Set([...prev, file])]);
-        }}
+        onClick={() => openFile(file)}
           className={`tree-element flex w-full cursor-pointer items-center gap-2 border-l-2 px-4 py-2.5 text-left text-sm font-medium transition ${
           currentFile === file ? "border-indigo-600 bg-indigo-50 text-indigo-700" : "border-transparent text-slate-600 hover:bg-slate-100"
         }`}
@@ -413,21 +628,47 @@ const Project = () => {
 </div>
         </div>
 
-        <div className="code-editor flex h-full flex-grow shrink flex-col">
-          <div className="top flex w-full justify-between border-b border-slate-200 bg-white">
-            <div className="files flex overflow-auto">
-              {openFiles.map((file, index) => (
-                <button
-                  key={index}
-                  onClick={() => setCurrentFile(file)}
-                  className={`open-file flex w-fit items-center gap-2 border-r border-slate-200 px-4 py-3 text-sm font-medium ${currentFile === file ? "bg-slate-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50"}`}
+        <div className="code-editor relative flex h-full min-w-0 flex-grow shrink flex-col">
+          <div className="top flex min-h-13 w-full items-center justify-between border-b border-slate-200 bg-white">
+            <div className="files flex min-w-0 flex-1 self-stretch overflow-x-auto">
+              {openFiles.map((file) => (
+                <div
+                  key={file}
+                  className={`group flex shrink-0 items-center border-r border-slate-200 text-sm font-medium transition ${currentFile === file ? "border-t-2 border-t-indigo-600 bg-white text-indigo-700" : "border-t-2 border-t-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-700"}`}
                 >
-                  <p className="font-semibold text-lg">{file}</p>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => openFile(file)}
+                    title={file}
+                    className="max-w-52 truncate px-4 py-3 text-left outline-none focus:bg-indigo-50"
+                  >
+                    <i className="ri-file-code-line mr-2 text-slate-400"></i>{file}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => closeFile(file)}
+                    title={`Close ${file}`}
+                    aria-label={`Close ${file}`}
+                    className="mr-2 grid size-6 place-items-center rounded-md text-slate-400 transition hover:bg-slate-200 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                  >
+                    <i className="ri-close-line text-base"></i>
+                  </button>
+                </div>
               ))}
             </div>
 
-            <div className="actions flex items-center gap-2 px-3">
+            <div className="actions flex shrink-0 items-center gap-2 border-l border-slate-200 bg-white px-3">
+              <button
+                type="button"
+                disabled={!currentFile}
+                onClick={() => {
+                  loadFileRevisions(currentFile);
+                  setIsHistoryOpen(true);
+                }}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <i className="ri-history-line mr-1"></i>History{currentFile ? ` · v${fileRevisions[currentFile] || 0}` : ""}
+              </button>
               <button
                 onClick={async () => {
   try {
@@ -511,43 +752,43 @@ const Project = () => {
               </button>
             </div>
           </div>
-          <div className="bottom flex flex-grow max-w-full shrink overflow-auto">
-            {fileTree?.[currentFile]?.file?.contents !== undefined && (
-              <div className="code-editor-area h-full flex-grow overflow-auto bg-slate-950">
-                <pre className="hljs h-full">
-                  <code
-                    className="hljs h-full outline-none"
-                    contentEditable
-                    suppressContentEditableWarning
-                    onBlur={(e) => {
-                      const updatedContent = e.target.innerText;
-                      const ft = {
-                        ...fileTree,
-                        [currentFile]: {
-                          file: {
-                            contents: updatedContent,
-                          },
-                        },
-                      };
-                      setFileTree(ft);
-                      saveFileTree(ft);
-                    }}
-                    dangerouslySetInnerHTML={{
-                      __html: hljs.highlight(
-                        "javascript",
-                        fileTree?.[currentFile]?.file?.contents ?? "",
-                      ).value,
-                    }}
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      paddingBottom: "25rem",
-                      counterSet: "line-numbering",
-                    }}
-                  />
-                </pre>
-              </div>
+          <div className="bottom flex max-w-full flex-grow shrink overflow-hidden bg-slate-950">
+            {currentFile ? (
+              <Editor
+                key={currentFile}
+                path={currentFile}
+                height="100%"
+                language={getEditorLanguage(currentFile)}
+                value={editorContent}
+                theme="vs-dark"
+                onChange={updateEditorContent}
+                options={{
+                  automaticLayout: true,
+                  fontSize: 14,
+                  lineHeight: 22,
+                  minimap: { enabled: true },
+                  padding: { top: 14, bottom: 24 },
+                  scrollBeyondLastLine: false,
+                  wordWrap: "on",
+                  tabSize: 2,
+                  insertSpaces: true,
+                  suggest: { showWords: true },
+                  quickSuggestions: true,
+                  parameterHints: { enabled: true },
+                  formatOnPaste: true,
+                  formatOnType: true,
+                }}
+              />
+            ) : (
+              <div className="grid w-full place-items-center text-center text-sm text-slate-400"><div><i className="ri-file-code-line mb-3 block text-3xl text-slate-600"></i>Select a file to start editing.</div></div>
             )}
           </div>
+          {isHistoryOpen && (
+            <aside className="absolute inset-y-0 right-0 z-20 flex w-80 flex-col border-l border-slate-200 bg-white shadow-2xl">
+              <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-indigo-600">Version history</p><h2 className="max-w-48 truncate text-sm font-semibold text-slate-900">{currentFile}</h2></div><button type="button" onClick={() => setIsHistoryOpen(false)} className="grid size-8 place-items-center rounded-lg text-slate-500 hover:bg-slate-100"><i className="ri-close-line"></i></button></header>
+              <div className="flex-1 overflow-auto p-3">{revisionHistory.length ? revisionHistory.map((revision) => (<div key={revision._id} className="mb-2 rounded-xl border border-slate-200 p-3"><div className="flex items-center justify-between gap-2"><span className="text-sm font-bold text-slate-800">Version {revision.revision}</span><button type="button" onClick={() => restoreRevision(revision)} className="rounded-lg bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100">Restore</button></div><p className="mt-2 truncate text-xs text-slate-500">{revision.changedBy.email}</p><p className="mt-1 text-xs text-slate-400">{new Date(revision.createdAt).toLocaleString()}</p></div>)) : (<div className="px-3 py-10 text-center text-sm text-slate-500"><i className="ri-history-line mb-2 block text-2xl text-slate-300"></i>No saved versions yet.</div>)}</div>
+            </aside>
+          )}
         </div>
 
         {iframeUrl && webContainer && (
